@@ -61,7 +61,7 @@ def check_mismatches(csv_df: pd.DataFrame, shopify_df: pd.DataFrame, filename: s
                 'sku': sku, 'handle': handle, 'field': field,
                 'csv_value': csv_val, 'shopify_value': shopify_val,
                 'variant_id': variant_id, 'product_id': product_id, 'inventory_item_id': inventory_item_id,
-                'locations': row.get('locations_shopify', '')
+                'locations': row.get('locations_shopify', row.get('locations', ''))
             }
             mismatch.update(kwargs)
             return mismatch
@@ -207,7 +207,8 @@ def check_stale_clearance(shopify_df: pd.DataFrame, csv_df: pd.DataFrame) -> pd.
                       stale.append({
                           'sku': row.get('sku'), 'handle': row.get('handle'), 
                           'field': 'stale_clearance_tag', 'csv_value': 'Not in Clearance file', 'shopify_value': 'Has Clearance tag',
-                          'variant_id': row.get('id'), 'product_id': row.get('product_id'), 'inventory_item_id': row.get('inventoryItemId')
+                          'variant_id': row.get('id'), 'product_id': row.get('product_id'), 'inventory_item_id': row.get('inventoryItemId'),
+                          'locations': row.get('locations', '')
                       })
                       
     stale_df = pd.DataFrame(stale)

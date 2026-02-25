@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import re
 import os
 
 def check_mismatches(csv_df: pd.DataFrame, shopify_df: pd.DataFrame, filename: str) -> pd.DataFrame:
@@ -55,12 +56,14 @@ def check_mismatches(csv_df: pd.DataFrame, shopify_df: pd.DataFrame, filename: s
         inventory_item_id = row.get('inventoryItemId_shopify', row.get('inventoryItemId'))
         
         # Helper to construct mismatch dict
-        def make_mismatch(field, csv_val, shopify_val):
-            return {
+        def make_mismatch(field, csv_val, shopify_val, **kwargs):
+            mismatch = {
                 'sku': sku, 'handle': handle, 'field': field,
                 'csv_value': csv_val, 'shopify_value': shopify_val,
                 'variant_id': variant_id, 'product_id': product_id, 'inventory_item_id': inventory_item_id
             }
+            mismatch.update(kwargs)
+            return mismatch
         
         # --- Rule 1: Price ---
         if pd.notna(row['price_csv']) and pd.notna(row['price_shopify']) and row['price_csv'] != row['price_shopify']:
@@ -141,6 +144,20 @@ def check_mismatches(csv_df: pd.DataFrame, shopify_df: pd.DataFrame, filename: s
                  # Should have clearance tags
                  if 'clearance' not in shop_tags:
                       mismatches.append(make_mismatch('missing_clearance_tag', 'Clearance', shop_tags_raw if shop_tags_raw and shop_tags_raw != 'nan' else "None"))
+                      
+        # --- Rule 4: SEO / H1 in Description ---
+        # Fetch the descriptionHtml attribute correctly from row
+        desc_html = row.get('descriptionHtml_shopify', row.get('descriptionHtml', ''))
+        if pd.notna(desc_html) and isinstance(desc_html, str):
+            # perform case-insensitive check for H1 tags
+            if re.search(r'<h1\b[^>]*>', desc_html, re.IGNORECASE):
+                # Calculate the fixed HTML
+                # Replace <h1 ...> with <h2 ...>
+                fixed_html = re.sub(r'<h1(\b[^>]*)>', r'<h2\1>', desc_html, flags=re.IGNORECASE)
+                # Replace </h1> with </h2>
+                fixed_html = re.sub(r'</h1>', r'</h2>', fixed_html, flags=re.IGNORECASE)
+                
+                mismatches.append(make_mismatch('h1_in_description', 'Uses H2 Tags', 'Contains H1 Tag', fixed_descriptionHtml=fixed_html))
                      
     # 4. Missing in Shopify
     missing = merged[merged['sku_csv'].notna() & merged['sku_shopify'].isna()]

@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from ftp_service import list_csv_files, get_csv_as_dataframe
-from shopify_service import get_shopify_data_for_skus, get_shopify_data_bulk, update_product_tags, update_product_template_suffix, update_variant_price, create_product, remove_product_tag
+from shopify_service import get_shopify_data_for_skus, get_shopify_data_bulk, update_product_tags, update_product_template_suffix, update_variant_price, create_product, remove_product_tag, batch_process_mismatches
 from audit_engine import check_mismatches, check_stale_clearance
 
 st.set_page_config(page_title="SyncShop Audit", page_icon="📝", layout="wide")
@@ -57,9 +57,11 @@ else:
             with st.spinner(f"Fetching {len(skus)} SKUs from Shopify..."):
                 try:
                     if "Bulk" in fetch_method:
-                        shopify_df = get_shopify_data_bulk(skus)
+                        shopify_df, excessive_media_df = get_shopify_data_bulk(skus)
                     else:
                         shopify_df = get_shopify_data_for_skus(skus)
+                        excessive_media_df = pd.DataFrame()
+                    st.session_state['is_bulk_mode'] = "Bulk" in fetch_method
                 except Exception as e:
                     st.error(f"Failed to fetch Shopify data: {e}")
                     st.stop()
@@ -72,14 +74,18 @@ else:
                     if not stale_df.empty:
                          mismatch_df = pd.concat([mismatch_df, stale_df], ignore_index=True)
                          
+            mismatch_df['Error_Log'] = ""             
             st.session_state['mismatch_df'] = mismatch_df
             st.session_state['missing_df'] = missing_df
+            st.session_state['excessive_media_df'] = excessive_media_df
             st.session_state['matched_count'] = matched_count
             st.session_state['missing_count'] = len(missing_df)
             st.success("Audit complete!")
             
         mismatch_df = st.session_state['mismatch_df']
         missing_df = st.session_state.get('missing_df', pd.DataFrame())
+        excessive_media_df = st.session_state.get('excessive_media_df', pd.DataFrame())
+        is_bulk = st.session_state.get('is_bulk_mode', False)
         matched_count = st.session_state['matched_count']
         missing_count = st.session_state['missing_count']
         
@@ -105,67 +111,26 @@ else:
                 st.info("No items selected to fix.")
                 return
             
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            total = len(df_to_fix)
-            success_count = 0
-            error_count = 0
-            error_logs = []
-            successful_indices = []
+            with st.spinner(f"Batch processing {len(df_to_fix)} fixes..."):
+                errors_dict = batch_process_mismatches(df_to_fix)
             
-            for i, (idx, row) in enumerate(df_to_fix.iterrows()):
-                status_text.text(f"Processing {i+1} of {total}: SKU {row['sku']} - {row['field']}")
-                success = False
-                error_msg = ""
-                
-                try:
-                    if row['field'] == 'price':
-                        success, error_msg = update_variant_price(row['product_id'], row['variant_id'], price=row['csv_value'])
-                    elif row['field'] == 'compare_at_price':
-                        success, error_msg = update_variant_price(row['product_id'], row['variant_id'], compare_at_price=row['csv_value'])
-
-                    elif row['field'] == 'incorrect_template_suffix':
-                        success, error_msg = update_product_template_suffix(row['product_id'], template_suffix=row['csv_value'])
-                    elif row['field'] == 'missing_oversize_tag':
-                        current_tags = row['shopify_value']
-                        new_tags = current_tags + ", oversize" if current_tags and current_tags != "None" else "oversize"
-                        success, error_msg = update_product_tags(row['product_id'], tags=new_tags)
-                    elif row['field'] == 'missing_clearance_tag':
-                        current_tags = row['shopify_value']
-                        new_tags = current_tags + ", clearance" if current_tags and current_tags != "None" else "clearance"
-                        success, error_msg = update_product_tags(row['product_id'], tags=new_tags)
-                    elif row['field'] == 'clearance_price_mismatch':
-                        success1, msg1 = remove_product_tag(row['product_id'], "clearance")
-                        success2, msg2 = update_product_template_suffix(row['product_id'], template_suffix=None)
-                        success = success1 and success2
-                        if not success:
-                            error_msg = f"{msg1} | {msg2}".strip(" |")
-                    elif row['field'] == 'sticky_sale':
-                        success, error_msg = update_variant_price(row['product_id'], row['variant_id'], compare_at_price=None)
-                    elif row['field'] == 'stale_clearance_tag':
-                        st.warning(f"Auto-fix for slate clearance tag requires manual review for now.")
-                        success, error_msg = False, "Manual review required"
-                except Exception as e:
-                    success, error_msg = False, str(e)
-                    
-                if success:
-                    success_count += 1
-                    successful_indices.append(idx)
-                else:
-                    error_count += 1
-                    err_text = error_msg if error_msg else "Unknown Shopify Error"
-                    error_logs.append(f"**SKU {row['sku']}** ({row['field']}): {err_text}")
-                    
-                progress_bar.progress((i + 1) / total)
-                
-            status_text.text(f"Finished! Success: {success_count}, Errors: {error_count}")
+            success_count = len(df_to_fix) - len(errors_dict)
+            error_count = len(errors_dict)
+            
+            # Identify which rows succeeded
+            successful_indices = [idx for idx in df_to_fix.index if idx not in errors_dict]
             
             if success_count > 0:
                 st.session_state['mismatch_df'] = st.session_state['mismatch_df'].drop(index=successful_indices)
                 st.session_state['last_action_success'] = f"Successfully processed {success_count} items."
             
             if error_count > 0:
-                st.session_state['last_action_errors'] = error_logs
+                # Update the Error_Log column for failed items
+                for idx, err_msg in errors_dict.items():
+                    if idx in st.session_state['mismatch_df'].index:
+                         st.session_state['mismatch_df'].at[idx, 'Error_Log'] = err_msg
+                         
+                st.session_state['last_action_errors'] = [f"{error_count} items failed. Check the 'Error_Log' column for details."]
                 
             if success_count > 0 or error_count > 0:
                 st.rerun()
@@ -262,7 +227,10 @@ else:
             if success_count > 0 or error_count > 0:
                 st.rerun()
         
-        tabs = st.tabs(["Mismatch Report", "Missing Products Report"])
+        if is_bulk:
+            tabs = st.tabs(["Mismatch Report", "Missing Products Report", "Excessive Media"])
+        else:
+            tabs = st.tabs(["Mismatch Report", "Missing Products Report"])
         
         with tabs[0]:
             if total_mismatches > 0:
@@ -361,3 +329,21 @@ else:
                  )
             else:
                  st.info("No missing products found. All SKUs in CSV exist in Shopify.")
+
+        if is_bulk:
+            with tabs[2]:
+                st.subheader("Excessive Media Analyzer")
+                st.markdown("Products where the number of media items exceeds the number of variants. Evaluated across the **entire Shopify catalog**.")
+                if not excessive_media_df.empty:
+                    st.dataframe(excessive_media_df, use_container_width=True, hide_index=True)
+                    st.divider()
+                    csv_media = excessive_media_df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="Download Excessive Media Report as CSV",
+                        data=csv_media,
+                        file_name=f"excessive_media_{selected_file.replace('.csv', '')}.csv" if selected_file else "excessive_media.csv",
+                        mime="text/csv",
+                        key="dl_excessive_media"
+                    )
+                else:
+                    st.info("🎉 No products found with excessive media!")

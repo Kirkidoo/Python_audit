@@ -4,8 +4,8 @@ import pandas as pd
 from io import BytesIO
 from dotenv import load_dotenv
 
-# Load environment variables from the parent directory's .env.local
-load_dotenv(dotenv_path='.env.local')
+# Load environment variables from the parent directory's .env
+load_dotenv(dotenv_path='.env')
 
 FTP_HOST = os.getenv('GAMMA_FTP_HOST')
 FTP_USER = os.getenv('GAMMA_FTP_USER')

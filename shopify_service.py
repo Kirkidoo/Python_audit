@@ -377,16 +377,29 @@ def get_shopify_data_bulk(skus: list) -> pd.DataFrame:
          
     # 5. Determine excessive media products
     excessive_media_products = []
+    
+    product_locations = {}
+    for var in final_variants:
+        pid = var['product_id']
+        locs = var['locations'].split(", ") if var['locations'] else []
+        if pid not in product_locations:
+             product_locations[pid] = set()
+        for loc in locs:
+             if loc:
+                 product_locations[pid].add(loc)
+                 
     for pid, p_data in products_map.items():
         v_count = product_variant_counts.get(pid, 0)
         m_count = p_data.get('mediaCount', 0)
         if m_count > v_count:
+            locs_for_product = ", ".join(sorted(list(product_locations.get(pid, set()))))
             excessive_media_products.append({
                 'product_id': pid,
                 'handle': p_data.get('handle'),
                 'title': p_data.get('title'),
                 'media_count': m_count,
-                'variant_count': v_count
+                'variant_count': v_count,
+                'locations': locs_for_product
             })
             
     excessive_media_df = pd.DataFrame(excessive_media_products)

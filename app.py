@@ -347,9 +347,17 @@ else:
                 st.subheader("Excessive Media Analyzer")
                 st.markdown("Products where the number of media items exceeds the number of variants. Evaluated across the **entire Shopify catalog**.")
                 if not excessive_media_df.empty:
-                    st.dataframe(excessive_media_df, use_container_width=True, hide_index=True)
+                    location_options_media = ["All", "Gamma Warehouse", "Garage Harry Stanley"]
+                    selected_location_media = st.selectbox("Location Filter", location_options_media, index=0, key="media_location_filter")
+                    
+                    display_media_df = excessive_media_df.copy()
+                    if selected_location_media != "All":
+                        if 'locations' in display_media_df.columns:
+                            display_media_df = display_media_df[display_media_df['locations'].fillna('').str.contains(selected_location_media, case=False, na=False)]
+                            
+                    st.dataframe(display_media_df, use_container_width=True, hide_index=True)
                     st.divider()
-                    csv_media = excessive_media_df.to_csv(index=False).encode('utf-8')
+                    csv_media = display_media_df.to_csv(index=False).encode('utf-8')
                     st.download_button(
                         label="Download Excessive Media Report as CSV",
                         data=csv_media,

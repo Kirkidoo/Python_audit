@@ -257,7 +257,8 @@ else:
                         "product_id": None,
                         "inventory_item_id": None,
                         "shopify_price": None,
-                        "shopify_compare_at_price": None
+                        "shopify_compare_at_price": None,
+                        "is_clearance_file": None
                     },
                     disabled=[col for col in display_df.columns if col != 'Select'],
                     use_container_width=True,
@@ -280,7 +281,7 @@ else:
                 st.divider()
                 
                 # Download Button
-                download_df = mismatch_df.drop(columns=['variant_id', 'product_id', 'inventory_item_id', 'shopify_price', 'shopify_compare_at_price'], errors='ignore')
+                download_df = mismatch_df.drop(columns=['variant_id', 'product_id', 'inventory_item_id', 'shopify_price', 'shopify_compare_at_price', 'is_clearance_file'], errors='ignore')
                 csv_data = download_df.to_csv(index=False).encode('utf-8')
                 st.download_button(
                     label="Download Mismatch Report as CSV",

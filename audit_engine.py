@@ -62,7 +62,8 @@ def check_mismatches(csv_df: pd.DataFrame, shopify_df: pd.DataFrame, filename: s
                 'csv_value': csv_val, 'shopify_value': shopify_val,
                 'variant_id': variant_id, 'product_id': product_id, 'inventory_item_id': inventory_item_id,
                 'shopify_price': row.get('price_shopify'),
-                'shopify_compare_at_price': row.get('compareAtPrice_shopify')
+                'shopify_compare_at_price': row.get('compareAtPrice_shopify'),
+                'is_clearance_file': is_clearance_file
             }
             mismatch.update(kwargs)
             return mismatch

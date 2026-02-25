@@ -63,6 +63,15 @@ query getProductsBySku($query: String!, $cursor: String) {
         inventoryQuantity
         inventoryItem {
           id
+          inventoryLevels(first: 10) {
+            edges {
+              node {
+                location {
+                  name
+                }
+              }
+            }
+          }
         }
         product {
           id
@@ -119,6 +128,15 @@ def get_shopify_data_for_skus(skus: list) -> pd.DataFrame:
                     else:
                         tags_str = ""
 
+                    # Extract locations
+                    locations = []
+                    inventory_item = node.get('inventoryItem') or {}
+                    for level_edge in inventory_item.get('inventoryLevels', {}).get('edges', []):
+                        loc_name = level_edge.get('node', {}).get('location', {}).get('name')
+                        if loc_name:
+                            locations.append(loc_name)
+                    locations_str = ", ".join(locations)
+
                     all_variants.append({
                         'id': node.get('id'),
                         'variant_id': node.get('id'),
@@ -126,7 +144,8 @@ def get_shopify_data_for_skus(skus: list) -> pd.DataFrame:
                         'price': node.get('price'),
                         'compareAtPrice': node.get('compareAtPrice'),
                         'inventoryQuantity': node.get('inventoryQuantity'),
-                        'inventoryItemId': node.get('inventoryItem', {}).get('id') if node.get('inventoryItem') else None,
+                        'inventoryItemId': inventory_item.get('id'),
+                        'locations': locations_str,
                         'product_id': product.get('id'),
                         'handle': product.get('handle'),
                         'title': product.get('title'),
@@ -148,7 +167,7 @@ def get_shopify_data_for_skus(skus: list) -> pd.DataFrame:
     
     # If no results, return empty dataframe with expected columns to prevent downstream errors
     if df.empty:
-         return pd.DataFrame(columns=['id', 'sku', 'price', 'compareAtPrice', 'inventoryQuantity', 'inventoryItemId', 'product_id', 'handle', 'title', 'tags', 'templateSuffix', 'descriptionHtml'])
+         return pd.DataFrame(columns=['id', 'sku', 'price', 'compareAtPrice', 'inventoryQuantity', 'inventoryItemId', 'locations', 'product_id', 'handle', 'title', 'tags', 'templateSuffix', 'descriptionHtml'])
          
     return df
 
@@ -272,12 +291,13 @@ def get_shopify_data_bulk(skus: list) -> pd.DataFrame:
     variants = []
     product_variant_counts = {}
     
+    inventory_levels_map = {} # inventory_item_id -> list of location names
+    
     for line in jsonl_content.splitlines():
         if not line.strip():
             continue
         obj = json.loads(line)
         
-        # Determine if it's a Product or Variant based on the ID structure or __parentId
         if '__parentId' not in obj:
             # It's a Product
             product_id = obj.get('id')
@@ -302,34 +322,58 @@ def get_shopify_data_bulk(skus: list) -> pd.DataFrame:
             }
             product_variant_counts[product_id] = 0
         else:
-            # It's a Variant
             parent_id = obj.get('__parentId')
-            product = products_map.get(parent_id, {})
             
-            # Increment variant count
-            if parent_id in product_variant_counts:
-                product_variant_counts[parent_id] += 1
-            
-            variants.append({
-                'id': obj.get('id'),
-                'variant_id': obj.get('id'),
-                'sku': obj.get('sku'),
-                'price': obj.get('price'),
-                'compareAtPrice': obj.get('compareAtPrice'),
-                'inventoryQuantity': obj.get('inventoryQuantity'),
-                'inventoryItemId': obj.get('inventoryItem', {}).get('id') if obj.get('inventoryItem') else None,
-                'product_id': product.get('product_id'),
-                'handle': product.get('handle'),
-                'title': product.get('title'),
-                'tags': product.get('tags'),
-                'templateSuffix': product.get('templateSuffix'),
-                'descriptionHtml': product.get('descriptionHtml')
-            })
+            # Check if it's an InventoryLevel (has 'location')
+            if 'location' in obj:
+                loc_name = obj.get('location', {}).get('name')
+                if loc_name:
+                    if parent_id not in inventory_levels_map:
+                        inventory_levels_map[parent_id] = []
+                    inventory_levels_map[parent_id].append(loc_name)
+            else:
+                # It's a Variant
+                product = products_map.get(parent_id, {})
+                
+                # Increment variant count
+                if parent_id in product_variant_counts:
+                    product_variant_counts[parent_id] += 1
+                
+                # We'll stash variants now, and attach locations in a second pass 
+                # because the inventoryLevels might appear after the variant in the JSONL stream.
+                variants.append(obj)
+                
+    # Second pass: Map variants to their product info and inventory levels
+    final_variants = []
+    for var_obj in variants:
+        parent_id = var_obj.get('__parentId')
+        product = products_map.get(parent_id, {})
+        
+        inv_item_id = var_obj.get('inventoryItem', {}).get('id')
+        locations_list = inventory_levels_map.get(inv_item_id, []) if inv_item_id else []
+        locations_str = ", ".join(locations_list)
+        
+        final_variants.append({
+            'id': var_obj.get('id'),
+            'variant_id': var_obj.get('id'),
+            'sku': var_obj.get('sku'),
+            'price': var_obj.get('price'),
+            'compareAtPrice': var_obj.get('compareAtPrice'),
+            'inventoryQuantity': var_obj.get('inventoryQuantity'),
+            'inventoryItemId': inv_item_id,
+            'locations': locations_str,
+            'product_id': product.get('product_id'),
+            'handle': product.get('handle'),
+            'title': product.get('title'),
+            'tags': product.get('tags'),
+            'templateSuffix': product.get('templateSuffix'),
+            'descriptionHtml': product.get('descriptionHtml')
+        })
             
     # Convert to DataFrame
-    df = pd.DataFrame(variants)
+    df = pd.DataFrame(final_variants)
     if df.empty:
-         return pd.DataFrame(columns=['id', 'sku', 'price', 'compareAtPrice', 'inventoryQuantity', 'inventoryItemId', 'product_id', 'handle', 'title', 'tags', 'templateSuffix', 'descriptionHtml'])
+         return pd.DataFrame(columns=['id', 'sku', 'price', 'compareAtPrice', 'inventoryQuantity', 'inventoryItemId', 'locations', 'product_id', 'handle', 'title', 'tags', 'templateSuffix', 'descriptionHtml'])
          
     # 5. Determine excessive media products
     excessive_media_products = []

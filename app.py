@@ -237,13 +237,25 @@ else:
                 st.subheader("Mismatch Report")
                 
                 # Filtering
-                fields = ["All"] + list(mismatch_df['field'].unique())
-                selected_field = st.radio("Filter by Issue Type", fields, horizontal=True, key="mismatch_filter")
+                col_filt_1, col_filt_2 = st.columns(2)
+                
+                with col_filt_1:
+                    fields = ["All"] + list(mismatch_df['field'].unique())
+                    selected_field = st.radio("Filter by Issue Type", fields, horizontal=True, key="mismatch_filter")
+                
+                with col_filt_2:
+                    location_options = ["All", "Gamma Warehouse", "Garage Harry Stanley"]
+                    selected_location = st.selectbox("Location Filter", location_options, index=0, key="location_filter")
+                
+                display_df = mismatch_df.copy()
                 
                 if selected_field != "All":
-                     display_df = mismatch_df[mismatch_df['field'] == selected_field].copy()
-                else:
-                     display_df = mismatch_df.copy()
+                     display_df = display_df[display_df['field'] == selected_field]
+                     
+                if selected_location != "All":
+                     display_df = display_df[display_df['locations'].fillna('').str.contains(selected_location, case=False, na=False)]
+                     
+                display_df = display_df.copy() # To avoid SettingWithCopyWarning downstream
                      
                 # Add Select column for data editor
                 display_df.insert(0, 'Select', False)

@@ -60,7 +60,8 @@ def check_mismatches(csv_df: pd.DataFrame, shopify_df: pd.DataFrame, filename: s
             mismatch = {
                 'sku': sku, 'handle': handle, 'field': field,
                 'csv_value': csv_val, 'shopify_value': shopify_val,
-                'variant_id': variant_id, 'product_id': product_id, 'inventory_item_id': inventory_item_id
+                'variant_id': variant_id, 'product_id': product_id, 'inventory_item_id': inventory_item_id,
+                'locations': row.get('locations_shopify', '')
             }
             mismatch.update(kwargs)
             return mismatch

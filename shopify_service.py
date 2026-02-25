@@ -702,11 +702,11 @@ def batch_process_mismatches(df_to_fix: pd.DataFrame) -> dict:
                 if row['field'] == 'price':
                     new_price = float(row['csv_value'])
                     mut['price'] = str(row['csv_value'])
-                    # Smart fix: clear compare_at_price if new price >= it (prevents false sale)
+                    # Smart fix: clear compare_at_price if new price <= it (prevents sticky/false sale)
                     current_compare = row.get('shopify_compare_at_price')
                     if pd.notna(current_compare):
                         try:
-                            if new_price >= float(current_compare):
+                            if new_price <= float(current_compare):
                                 mut['compareAtPrice'] = None
                         except (ValueError, TypeError):
                             pass

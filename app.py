@@ -238,7 +238,13 @@ else:
                 
                 # Filtering
                 fields = ["All"] + list(mismatch_df['field'].unique())
-                selected_field = st.radio("Filter by Issue Type", fields, horizontal=True, key="mismatch_filter")
+                
+                col_filt, col_sel = st.columns([3, 1])
+                with col_filt:
+                    selected_field = st.radio("Filter by Issue Type", fields, horizontal=True, key="mismatch_filter")
+                with col_sel:
+                    st.write("") # Spacer
+                    select_all_mismatch = st.checkbox("Select All", key="select_all_mismatch")
                 
                 if selected_field != "All":
                      display_df = mismatch_df[mismatch_df['field'] == selected_field].copy()
@@ -246,7 +252,7 @@ else:
                      display_df = mismatch_df.copy()
                      
                 # Add Select column for data editor
-                display_df.insert(0, 'Select', False)
+                display_df.insert(0, 'Select', select_all_mismatch)
                      
                 edited_df = st.data_editor(
                     display_df,
@@ -299,7 +305,9 @@ else:
                  st.markdown("Review and edit product details before creation. Changes here map directly to Shopify fields.")
                  
                  display_missing_df = missing_df.copy()
-                 display_missing_df.insert(0, 'Select', False)
+                 
+                 select_all_missing = st.checkbox("Select All", key="select_all_missing")
+                 display_missing_df.insert(0, 'Select', select_all_missing)
                  
                  edited_missing_df = st.data_editor(
                      display_missing_df,

@@ -39,24 +39,10 @@ else:
                                     help="Bulk Operation handles large FTP files (like 50,000+ SKUs) efficiently.")
     
     # --- Location Controls ---
+    # Always fetch all available locations silently (cached, fast)
     all_locations = fetch_locations()
-    location_names = [loc['name'] for loc in all_locations]
-    location_name_to_id = {loc['name']: loc['id'] for loc in all_locations}
-    
-    if all_locations:
-        selected_location_names = st.sidebar.multiselect(
-            "Inventory Locations",
-            options=location_names,
-            default=location_names,
-            help="Select which locations to show per-location inventory for. Leave all selected to see all."
-        )
-        selected_locations = [
-            {"id": location_name_to_id[n], "name": n}
-            for n in selected_location_names
-        ]
-    else:
-        selected_locations = []
-        st.sidebar.caption("⚠️ Could not load locations from Shopify.")
+    # selected_locations = all locations (Standard mode always fetches all)
+    selected_locations = all_locations if all_locations else []
     
     # Bulk-only: opt-in to per-location inventory
     include_locations_bulk = False

@@ -787,6 +787,14 @@ def batch_process_mismatches(df_to_fix: pd.DataFrame) -> dict:
                     variables[f"id_{i}"] = row['product_id']
                     variables[f"tags_{i}"] = [tag_to_add]
                     
+                    # For oversize fixes, also set template to heavy-products
+                    if row['field'] == 'missing_oversize_tag':
+                        query_parts.append(f"""
+                        {alias}_tmpl: productUpdate(input: $tmpl_{i}) {{ userErrors {{ message }} }}
+                        """)
+                        var_defs.append(f"$tmpl_{i}: ProductInput!")
+                        variables[f"tmpl_{i}"] = {"id": row['product_id'], "templateSuffix": "heavy-products"}
+                    
                 elif row['field'] == 'clearance_price_mismatch': # Needs tag removal + suffix clear
                     query_parts.append(f"""
                     {alias}_tag: tagsRemove(id: $id_{i}, tags: $tags_{i}) {{ userErrors {{ message }} }}

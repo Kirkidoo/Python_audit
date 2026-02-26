@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from ftp_service import list_csv_files, get_csv_as_dataframe
-from shopify_service import get_shopify_data_for_skus, get_shopify_data_bulk, update_product_tags, update_product_template_suffix, update_variant_price, create_product, remove_product_tag, batch_process_mismatches
+from shopify_service import get_shopify_data_for_skus, get_shopify_data_bulk, get_shopify_locations, update_product_tags, update_product_template_suffix, update_variant_price, create_product, remove_product_tag, batch_process_mismatches
 from audit_engine import check_mismatches, check_stale_clearance
 
 st.set_page_config(page_title="SyncShop Audit", page_icon="📝", layout="wide")
@@ -11,6 +11,13 @@ st.title("SyncShop Local Audit Dashboard")
 @st.cache_data(ttl=300)
 def fetch_ftp_files():
     return list_csv_files()
+
+@st.cache_data(ttl=600)
+def fetch_locations():
+    try:
+        return get_shopify_locations()
+    except Exception:
+        return []
 
 # Sidebar for file selection
 st.sidebar.header("Data Source")
@@ -30,6 +37,35 @@ else:
                                     ["Standard (Fast)", "Bulk Operation (For Large Files)"],
                                     index=default_index,
                                     help="Bulk Operation handles large FTP files (like 50,000+ SKUs) efficiently.")
+    
+    # --- Location Controls ---
+    all_locations = fetch_locations()
+    location_names = [loc['name'] for loc in all_locations]
+    location_name_to_id = {loc['name']: loc['id'] for loc in all_locations}
+    
+    if all_locations:
+        selected_location_names = st.sidebar.multiselect(
+            "Inventory Locations",
+            options=location_names,
+            default=location_names,
+            help="Select which locations to show per-location inventory for. Leave all selected to see all."
+        )
+        selected_locations = [
+            {"id": location_name_to_id[n], "name": n}
+            for n in selected_location_names
+        ]
+    else:
+        selected_locations = []
+        st.sidebar.caption("⚠️ Could not load locations from Shopify.")
+    
+    # Bulk-only: opt-in to per-location inventory
+    include_locations_bulk = False
+    if "Bulk" in fetch_method and all_locations:
+        include_locations_bulk = st.sidebar.checkbox(
+            "Include per-location inventory (slower bulk query)",
+            value=False,
+            help="Extends the bulk export to include inventory quantities per location. Increases time and file size."
+        )
     
     if st.sidebar.button("Run Audit", type="primary"):
         st.session_state['run_audit'] = True
@@ -57,9 +93,9 @@ else:
             with st.spinner(f"Fetching {len(skus)} SKUs from Shopify..."):
                 try:
                     if "Bulk" in fetch_method:
-                        shopify_df, excessive_media_df = get_shopify_data_bulk(skus)
+                        shopify_df, excessive_media_df = get_shopify_data_bulk(skus, include_locations=include_locations_bulk)
                     else:
-                        shopify_df = get_shopify_data_for_skus(skus)
+                        shopify_df = get_shopify_data_for_skus(skus, locations=selected_locations if selected_locations else None)
                         excessive_media_df = pd.DataFrame()
                     st.session_state['is_bulk_mode'] = "Bulk" in fetch_method
                 except Exception as e:
@@ -254,18 +290,35 @@ else:
                 # Add Select column for data editor
                 display_df.insert(0, 'Select', select_all_mismatch)
                      
+                # Determine which location qty columns exist in the data
+                loc_qty_cols = [c for c in display_df.columns if c.endswith(' Qty')]
+                
+                # Hidden system columns (never shown to user)
+                hidden_cols = {
+                    "variant_id": None,
+                    "product_id": None,
+                    "inventory_item_id": None,
+                    "shopify_price": None,
+                    "shopify_compare_at_price": None,
+                    "is_clearance_file": None
+                }
+                
+                # Location qty columns: visible but read-only
+                loc_col_config = {
+                    col: st.column_config.NumberColumn(col, help=f"On-hand inventory at {col.replace(' Qty', '')}")
+                    for col in loc_qty_cols
+                }
+                
+                column_config = {
+                    "Select": st.column_config.CheckboxColumn('Select', default=False),
+                    **hidden_cols,
+                    **loc_col_config
+                }
+                
                 edited_df = st.data_editor(
                     display_df,
                     hide_index=True,
-                    column_config={
-                        "Select": st.column_config.CheckboxColumn('Select', default=False),
-                        "variant_id": None,
-                        "product_id": None,
-                        "inventory_item_id": None,
-                        "shopify_price": None,
-                        "shopify_compare_at_price": None,
-                        "is_clearance_file": None
-                    },
+                    column_config=column_config,
                     disabled=[col for col in display_df.columns if col != 'Select'],
                     use_container_width=True,
                     height=600,
@@ -290,7 +343,7 @@ else:
                     
                 st.divider()
                 
-                # Download Button
+                # Download Button — strip location qty cols from download too for cleanliness (user can opt out)
                 download_df = mismatch_df.drop(columns=['variant_id', 'product_id', 'inventory_item_id', 'shopify_price', 'shopify_compare_at_price', 'is_clearance_file'], errors='ignore')
                 csv_data = download_df.to_csv(index=False).encode('utf-8')
                 st.download_button(

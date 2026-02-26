@@ -78,11 +78,73 @@ query getProductsBySku($query: String!, $cursor: String) {
 }
 """
 
-def get_shopify_data_for_skus(skus: list) -> pd.DataFrame:
+def _build_sku_query_with_locations(location_ids: list) -> str:
+    """
+    Builds a variant query that also fetches per-location inventory levels
+    for the given list of location GIDs.
+    """
+    loc_fragments = ""
+    for loc_id in location_ids:
+        # Use a safe alias derived from the GID tail
+        safe_alias = "loc_" + loc_id.split('/')[-1]
+        loc_fragments += f"""
+        {safe_alias}: inventoryLevel(locationId: \"{loc_id}\") {{
+          quantities(names: [\"on_hand\"]) {{
+            quantity
+          }}
+        }}"""
+
+    return f"""
+query getProductsBySku($query: String!, $cursor: String) {{
+  productVariants(first: 250, query: $query, after: $cursor) {{
+    pageInfo {{
+      hasNextPage
+      endCursor
+    }}
+    edges {{
+      node {{
+        id
+        sku
+        price
+        compareAtPrice
+        inventoryQuantity
+        inventoryItem {{
+          id
+          {loc_fragments}
+        }}
+        product {{
+          id
+          handle
+          title
+          tags
+          templateSuffix
+          descriptionHtml
+        }}
+      }}
+    }}
+  }}
+}}
+"""
+
+def get_shopify_data_for_skus(skus: list, locations: list = None) -> pd.DataFrame:
     """
     Fetches Shopify product variants for a list of SKUs and returns a Pandas DataFrame.
+    
+    Args:
+        skus: List of SKUs to fetch.
+        locations: Optional list of location dicts [{"id": gid, "name": str}, ...]
+                   When provided, adds per-location qty columns to the DataFrame.
     """
     print(f"Fetching {len(skus)} SKUs from Shopify...")
+    
+    # Choose query based on whether we want per-location data
+    location_ids = [loc['id'] for loc in locations] if locations else []
+    location_name_map = {loc['id']: loc['name'] for loc in locations} if locations else {}
+    
+    if location_ids:
+        query_to_use = _build_sku_query_with_locations(location_ids)
+    else:
+        query_to_use = GET_PRODUCTS_BY_SKU_QUERY
     
     # Batch SKUs to avoid excessively long query strings
     batch_size = 50 
@@ -103,12 +165,13 @@ def get_shopify_data_for_skus(skus: list) -> pd.DataFrame:
             variables = {"query": query_str, "cursor": cursor}
             
             try:
-                data = execute_graphql_query(GET_PRODUCTS_BY_SKU_QUERY, variables)
+                data = execute_graphql_query(query_to_use, variables)
                 variants_connection = data.get('productVariants', {})
                 
                 for edge in variants_connection.get('edges', []):
                     node = edge['node']
                     product = node.get('product', {})
+                    inventory_item = node.get('inventoryItem', {}) or {}
                     
                     # Flatten the data structure for Pandas
                     product_tags = product.get('tags', [])
@@ -119,21 +182,33 @@ def get_shopify_data_for_skus(skus: list) -> pd.DataFrame:
                     else:
                         tags_str = ""
 
-                    all_variants.append({
+                    row = {
                         'id': node.get('id'),
                         'variant_id': node.get('id'),
                         'sku': node.get('sku'),
                         'price': node.get('price'),
                         'compareAtPrice': node.get('compareAtPrice'),
                         'inventoryQuantity': node.get('inventoryQuantity'),
-                        'inventoryItemId': node.get('inventoryItem', {}).get('id') if node.get('inventoryItem') else None,
+                        'inventoryItemId': inventory_item.get('id'),
                         'product_id': product.get('id'),
                         'handle': product.get('handle'),
                         'title': product.get('title'),
                         'tags': tags_str,
                         'templateSuffix': product.get('templateSuffix'),
                         'descriptionHtml': product.get('descriptionHtml')
-                    })
+                    }
+                    
+                    # Add per-location qty columns
+                    for loc_id in location_ids:
+                        loc_name = location_name_map[loc_id]
+                        col_name = f"{loc_name} Qty"
+                        safe_alias = "loc_" + loc_id.split('/')[-1]
+                        level_data = inventory_item.get(safe_alias, {})
+                        quantities = level_data.get('quantities', []) if level_data else []
+                        qty = quantities[0].get('quantity', 0) if quantities else 0
+                        row[col_name] = qty
+                    
+                    all_variants.append(row)
                 
                 page_info = variants_connection.get('pageInfo', {})
                 has_next_page = page_info.get('hasNextPage', False)
@@ -152,61 +227,90 @@ def get_shopify_data_for_skus(skus: list) -> pd.DataFrame:
          
     return df
 
-def get_shopify_data_bulk(skus: list) -> pd.DataFrame:
+def get_shopify_data_bulk(skus: list, include_locations: bool = False) -> pd.DataFrame:
     """
     Fetches ALL Shopify product variants via Bulk Operations API, then filters 
     locally by the provided list of SKUs. This is highly efficient for very large datasets (50,000+ SKUs).
+    
+    Args:
+        skus: List of SKUs to filter results by.
+        include_locations: When True, extends the bulk query to include per-location
+                           inventory levels. Makes the bulk file larger/slower but adds
+                           per-location quantity columns to the result.
     """
     print("Initiating Bulk Operation for Shopify Data...")
     
+    # Build the inventory item sub-query depending on mode
+    if include_locations:
+        inventory_item_query = """
+                      inventoryItem {
+                        id
+                        inventoryLevels {
+                          edges {
+                            node {
+                              location {
+                                id
+                                name
+                              }
+                              quantities(names: [\"on_hand\"]) {
+                                quantity
+                              }
+                            }
+                          }
+                        }
+                      }"""
+    else:
+        inventory_item_query = """
+                      inventoryItem {
+                        id
+                      }"""
+
     # 1. Start the Bulk Operation
-    query = """
-    mutation {
+    query = f"""
+    mutation {{
       bulkOperationRunQuery(
         query: \"\"\"
-        {
-          products {
-            edges {
-              node {
+        {{
+          products {{
+            edges {{
+              node {{
                 id
                 handle
                 title
                 tags
                 templateSuffix
                 descriptionHtml
-                mediaCount {
+                mediaCount {{
                   count
-                }
-                variants {
-                  edges {
-                    node {
+                }}
+                variants {{
+                  edges {{
+                    node {{
                       id
                       sku
                       price
                       compareAtPrice
                       inventoryQuantity
-                      inventoryItem {
-                        id
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
+                      {inventory_item_query}
+                    }}
+                  }}
+                }}
+              }}
+            }}
+          }}
+        }}
         \"\"\"
-      ) {
-        bulkOperation {
+      ) {{
+        bulkOperation {{
           id
           status
-        }
-        userErrors {
+        }}
+        userErrors {{
           field
           message
-        }
-      }
-    }
+        }}
+      }}
+    }}
     """
     data = execute_graphql_query(query)
     errors = data.get('bulkOperationRunQuery', {}).get('userErrors', [])
@@ -258,7 +362,7 @@ def get_shopify_data_bulk(skus: list) -> pd.DataFrame:
         time.sleep(5) # Wait 5 seconds before polling again
         
     if not url:
-        return pd.DataFrame(columns=['id', 'sku', 'price', 'compareAtPrice', 'inventoryQuantity', 'inventoryItemId', 'product_id', 'handle', 'title', 'tags', 'templateSuffix', 'descriptionHtml'])
+        return pd.DataFrame(columns=['id', 'sku', 'price', 'compareAtPrice', 'inventoryQuantity', 'inventoryItemId', 'product_id', 'handle', 'title', 'tags', 'templateSuffix', 'descriptionHtml']), pd.DataFrame()
         
     # 3. Download the JSONL file
     print("Bulk Export completed. Downloading and processing data from Shopify...")
@@ -269,20 +373,25 @@ def get_shopify_data_bulk(skus: list) -> pd.DataFrame:
     jsonl_content = response.text
     
     products_map = {}
-    variants = []
+    variants_map = {}     # variant_id -> variant row dict
     product_variant_counts = {}
+    
+    # When include_locations=True, the JSONL has 3 types of rows:
+    #   - Product (no __parentId)
+    #   - Variant (parentId = product GID)
+    #   - InventoryLevel (parentId = inventoryItem GID)
+    # We need to track inventoryItem GID -> variant GID mapping.
+    inventory_item_to_variant = {}  # inventoryItem GID -> variant GID
     
     for line in jsonl_content.splitlines():
         if not line.strip():
             continue
         obj = json.loads(line)
+        obj_id = obj.get('id', '')
+        parent_id = obj.get('__parentId')
         
-        # Determine if it's a Product or Variant based on the ID structure or __parentId
-        if '__parentId' not in obj:
-            # It's a Product
-            product_id = obj.get('id')
-            
-            # Map tags
+        if parent_id is None:
+            # --- Product row ---
             product_tags = obj.get('tags', [])
             if isinstance(product_tags, str):
                 tags_str = product_tags
@@ -291,8 +400,8 @@ def get_shopify_data_bulk(skus: list) -> pd.DataFrame:
             else:
                 tags_str = ""
                 
-            products_map[product_id] = {
-                'product_id': product_id,
+            products_map[obj_id] = {
+                'product_id': obj_id,
                 'handle': obj.get('handle'),
                 'title': obj.get('title'),
                 'tags': tags_str,
@@ -300,36 +409,53 @@ def get_shopify_data_bulk(skus: list) -> pd.DataFrame:
                 'descriptionHtml': obj.get('descriptionHtml'),
                 'mediaCount': obj.get('mediaCount', {}).get('count', 0)
             }
-            product_variant_counts[product_id] = 0
-        else:
-            # It's a Variant
-            parent_id = obj.get('__parentId')
-            product = products_map.get(parent_id, {})
-            
-            # Increment variant count
+            product_variant_counts[obj_id] = 0
+
+        elif parent_id in products_map:
+            # --- Variant row (parent is a product) ---
+            product = products_map[parent_id]
             if parent_id in product_variant_counts:
                 product_variant_counts[parent_id] += 1
             
-            variants.append({
-                'id': obj.get('id'),
-                'variant_id': obj.get('id'),
+            inv_item = obj.get('inventoryItem', {})
+            inv_item_id = inv_item.get('id') if inv_item else None
+            
+            row = {
+                'id': obj_id,
+                'variant_id': obj_id,
                 'sku': obj.get('sku'),
                 'price': obj.get('price'),
                 'compareAtPrice': obj.get('compareAtPrice'),
                 'inventoryQuantity': obj.get('inventoryQuantity'),
-                'inventoryItemId': obj.get('inventoryItem', {}).get('id') if obj.get('inventoryItem') else None,
+                'inventoryItemId': inv_item_id,
                 'product_id': product.get('product_id'),
                 'handle': product.get('handle'),
                 'title': product.get('title'),
                 'tags': product.get('tags'),
                 'templateSuffix': product.get('templateSuffix'),
                 'descriptionHtml': product.get('descriptionHtml')
-            })
-            
+            }
+            variants_map[obj_id] = row
+            if inv_item_id:
+                inventory_item_to_variant[inv_item_id] = obj_id
+
+        elif parent_id in inventory_item_to_variant and include_locations:
+            # --- InventoryLevel row (parent is an inventoryItem) ---
+            variant_id = inventory_item_to_variant[parent_id]
+            if variant_id in variants_map:
+                loc = obj.get('location', {})
+                loc_name = loc.get('name', 'Unknown Location')
+                col_name = f"{loc_name} Qty"
+                quantities = obj.get('quantities', [])
+                qty = quantities[0].get('quantity', 0) if quantities else 0
+                variants_map[variant_id][col_name] = qty
+
+    variants = list(variants_map.values())
+
     # Convert to DataFrame
     df = pd.DataFrame(variants)
     if df.empty:
-         return pd.DataFrame(columns=['id', 'sku', 'price', 'compareAtPrice', 'inventoryQuantity', 'inventoryItemId', 'product_id', 'handle', 'title', 'tags', 'templateSuffix', 'descriptionHtml'])
+         return pd.DataFrame(columns=['id', 'sku', 'price', 'compareAtPrice', 'inventoryQuantity', 'inventoryItemId', 'product_id', 'handle', 'title', 'tags', 'templateSuffix', 'descriptionHtml']), pd.DataFrame()
          
     # 5. Determine excessive media products
     excessive_media_products = []
@@ -524,6 +650,37 @@ def _get_primary_location_id() -> str:
     except Exception as e:
          print(f"Error fetching location ID: {e}")
     return None
+
+
+def get_shopify_locations() -> list:
+    """
+    Fetches all active inventory locations from Shopify.
+    Returns a list of dicts: [{"id": "gid://...", "name": "Location Name"}, ...]
+    """
+    query = """
+    {
+      locations(first: 50, includeInactive: false) {
+        edges {
+          node {
+            id
+            name
+            isActive
+          }
+        }
+      }
+    }
+    """
+    try:
+        data = execute_graphql_query(query)
+        edges = data.get('locations', {}).get('edges', [])
+        return [
+            {"id": edge['node']['id'], "name": edge['node']['name']}
+            for edge in edges
+            if edge['node'].get('isActive', True)
+        ]
+    except Exception as e:
+        print(f"Error fetching locations: {e}")
+        return []
 
 def update_inventory(inventory_item_id: str, quantity: int) -> tuple[bool, str]:
     location_id = _get_primary_location_id()

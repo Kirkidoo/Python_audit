@@ -278,8 +278,12 @@ else:
                 
                 selected_rows = edited_df[edited_df['Select']]
                 
-                if col_a.button("⚙️ Fix Selected", type="primary", disabled=selected_rows.empty, key="fix_btn"):
-                    process_fixes(selected_rows)
+                # If "Select All" is checked, Fix Selected acts like Fix All
+                rows_to_fix = edited_df if select_all_mismatch else selected_rows
+                fix_selected_disabled = rows_to_fix.empty
+                
+                if col_a.button("⚙️ Fix Selected", type="primary", disabled=fix_selected_disabled, key="fix_btn"):
+                    process_fixes(rows_to_fix)
                     
                 if col_b.button("🚨 Fix All", type="secondary", key="fix_all_btn"):
                     process_fixes(edited_df)

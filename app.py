@@ -239,18 +239,18 @@ else:
                 # Filtering
                 fields = ["All"] + list(mismatch_df['field'].unique())
                 
-                col_filt, col_sel = st.columns([3, 1])
-                with col_filt:
-                    selected_field = st.radio("Filter by Issue Type", fields, horizontal=True, key="mismatch_filter")
-                with col_sel:
-                    st.write("") # Spacer
-                    select_all_mismatch = st.checkbox("Select All", key="select_all_mismatch")
+                selected_field = st.radio("Filter by Issue Type", fields, horizontal=True, key="mismatch_filter")
                 
                 if selected_field != "All":
                      display_df = mismatch_df[mismatch_df['field'] == selected_field].copy()
                 else:
                      display_df = mismatch_df.copy()
                      
+                # "Select All" checkbox placed in a narrow column to visually align with the Select column header
+                _sel_col, _ = st.columns([1, 14])
+                with _sel_col:
+                    select_all_mismatch = st.checkbox("All", key="select_all_mismatch", help="Select / deselect all rows")
+                
                 # Add Select column for data editor
                 display_df.insert(0, 'Select', select_all_mismatch)
                      

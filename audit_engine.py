@@ -36,6 +36,9 @@ def check_mismatches(csv_df: pd.DataFrame, shopify_df: pd.DataFrame, filename: s
     
     mismatches = []
     
+    # Detect per-location qty columns from shopify_df (columns ending with ' Qty')
+    location_qty_cols = [c for c in shopify_df.columns if c.endswith(' Qty')]
+    
     # 3. Process matches and look for discrepancies
     matches = merged[merged['sku_csv'].notna() & merged['sku_shopify'].notna()]
     print(f"Analyzing {len(matches)} matching SKUs for discrepancies...")
@@ -55,6 +58,12 @@ def check_mismatches(csv_df: pd.DataFrame, shopify_df: pd.DataFrame, filename: s
         product_id = row.get('product_id_shopify', row.get('product_id'))
         inventory_item_id = row.get('inventoryItemId_shopify', row.get('inventoryItemId'))
         
+        # Collect per-location qty values for this row (column may have _shopify suffix after merge)
+        loc_qty_data = {}
+        for col in location_qty_cols:
+            merged_col = f"{col}_shopify" if f"{col}_shopify" in row.index else col
+            loc_qty_data[col] = row.get(merged_col, 0)
+        
         # Helper to construct mismatch dict
         def make_mismatch(field, csv_val, shopify_val, **kwargs):
             mismatch = {
@@ -65,6 +74,7 @@ def check_mismatches(csv_df: pd.DataFrame, shopify_df: pd.DataFrame, filename: s
                 'shopify_compare_at_price': row.get('compareAtPrice_shopify'),
                 'is_clearance_file': is_clearance_file
             }
+            mismatch.update(loc_qty_data)  # Inject per-location qty columns
             mismatch.update(kwargs)
             return mismatch
         

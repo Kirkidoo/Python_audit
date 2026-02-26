@@ -272,16 +272,31 @@ else:
             if total_mismatches > 0:
                 st.subheader("Mismatch Report")
                 
-                # Filtering
+                # --- Filter by Issue Type ---
                 fields = ["All"] + list(mismatch_df['field'].unique())
-                
                 selected_field = st.radio("Filter by Issue Type", fields, horizontal=True, key="mismatch_filter")
                 
                 if selected_field != "All":
-                     display_df = mismatch_df[mismatch_df['field'] == selected_field].copy()
+                    display_df = mismatch_df[mismatch_df['field'] == selected_field].copy()
                 else:
-                     display_df = mismatch_df.copy()
-                     
+                    display_df = mismatch_df.copy()
+                
+                # --- Filter by Location (only shown when location qty columns are present) ---
+                loc_qty_cols = [c for c in display_df.columns if c.endswith(' Qty')]
+                if loc_qty_cols:
+                    loc_filter_options = ["All Locations"] + [c.replace(' Qty', '') for c in loc_qty_cols]
+                    selected_loc_filter = st.selectbox(
+                        "Filter by Inventory Location",
+                        options=loc_filter_options,
+                        key="location_row_filter",
+                        help="Show only rows where the selected location has stock (qty > 0)."
+                    )
+                    if selected_loc_filter != "All Locations":
+                        filter_col = f"{selected_loc_filter} Qty"
+                        if filter_col in display_df.columns:
+                            display_df = display_df[pd.to_numeric(display_df[filter_col], errors='coerce').fillna(0) > 0].copy()
+                        st.caption(f"📍 Showing {len(display_df)} rows with stock at **{selected_loc_filter}**")
+                
                 # "Select All" checkbox placed in a narrow column to visually align with the Select column header
                 _sel_col, _ = st.columns([1, 14])
                 with _sel_col:

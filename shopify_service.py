@@ -248,6 +248,7 @@ def get_shopify_data_bulk(skus: list, include_locations: bool = False) -> pd.Dat
                         inventoryLevels {
                           edges {
                             node {
+                              id
                               location {
                                 id
                                 name
@@ -439,14 +440,18 @@ def get_shopify_data_bulk(skus: list, include_locations: bool = False) -> pd.Dat
             if inv_item_id:
                 inventory_item_to_variant[inv_item_id] = obj_id
 
-        elif parent_id in inventory_item_to_variant and include_locations:
-            # --- InventoryLevel row (parent is an inventoryItem) ---
-            variant_id = inventory_item_to_variant[parent_id]
-            if variant_id in variants_map:
-                loc = obj.get('location', {})
+        elif include_locations and (
+            parent_id in inventory_item_to_variant  # parentId = inventoryItem GID
+            or parent_id in variants_map             # parentId = variant GID (fallback)
+        ):
+            # --- InventoryLevel row ---
+            # Resolve variant_id from either the inventoryItem→variant map or directly
+            variant_id = inventory_item_to_variant.get(parent_id) or (parent_id if parent_id in variants_map else None)
+            if variant_id and variant_id in variants_map:
+                loc = obj.get('location', {}) or {}
                 loc_name = loc.get('name', 'Unknown Location')
                 col_name = f"{loc_name} Qty"
-                quantities = obj.get('quantities', [])
+                quantities = obj.get('quantities', []) or []
                 qty = quantities[0].get('quantity', 0) if quantities else 0
                 variants_map[variant_id][col_name] = qty
 

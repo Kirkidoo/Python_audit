@@ -17,18 +17,43 @@ def check_mismatches(csv_df: pd.DataFrame, shopify_df: pd.DataFrame, filename: s
     csv_df['sku_lower'] = csv_df['sku'].astype(str).str.lower().str.strip()
     shopify_df['sku_lower'] = shopify_df['sku'].astype(str).str.lower().str.strip()
     
-    # Clean Prices (Removing $ and commas if any, converting to float)
-    for col in ['price', 'compareAtPrice']:
-        if col in csv_df.columns:
-            csv_df[col] = pd.to_numeric(csv_df[col].astype(str).str.replace(r'[\$,]', '', regex=True), errors='coerce')
-        if col in shopify_df.columns:
-            shopify_df[col] = pd.to_numeric(shopify_df.astype(str)[col], errors='coerce')
+    # Helper to check for coercion issues
+    def validate_and_coerce(df, col_name, dataframe_name):
+        if col_name in df.columns:
+            # First, clean the strings (remove $ and ,)
+            cleaned_series = df[col_name].astype(str).str.replace(r'[\$,]', '', regex=True).str.strip()
+            
+            # Check which rows will fail to convert to float (i.e. not empty and not a valid number)
+            # A valid number can optionally start with - and contain digits and at most one period
+            mask_not_empty = cleaned_series != ''
+            mask_is_nan = cleaned_series.str.lower() == 'nan'
+            mask_is_none = cleaned_series.str.lower() == 'none'
+            mask_is_na = cleaned_series.str.lower() == '<na>'
+            
+            valid_number_regex = r'^-?\d*\.?\d+$'
+            mask_invalid_format = ~cleaned_series.str.match(valid_number_regex)
+            
+            # Identify rows that have a value, aren't literal text "nan/none", but don't look like numbers
+            bad_data_mask = mask_not_empty & ~mask_is_nan & ~mask_is_none & ~mask_is_na & mask_invalid_format
+            
+            bad_rows = df[bad_data_mask]
+            if not bad_rows.empty:
+                print(f"WARNING: Found {len(bad_rows)} invalid numeric values in {dataframe_name} column '{col_name}'. Coercing to NaN:")
+                for idx, row in bad_rows.iterrows():
+                     print(f"  - SKU: {row.get('sku', 'Unknown')}, Value: '{cleaned_series.loc[idx]}'")
+                     
+            # Now safely coerce
+            df[col_name] = pd.to_numeric(cleaned_series, errors='coerce')
+
+    # Clean Prices
+    validate_and_coerce(csv_df, 'price', 'FTP CSV')
+    validate_and_coerce(csv_df, 'compareAtPrice', 'FTP CSV')
+    validate_and_coerce(shopify_df, 'price', 'Shopify Data')
+    validate_and_coerce(shopify_df, 'compareAtPrice', 'Shopify Data')
             
     # Clean Inventory
-    if 'inventory' in csv_df.columns:
-         csv_df['inventory'] = pd.to_numeric(csv_df['inventory'], errors='coerce')
-    if 'inventoryQuantity' in shopify_df.columns:
-         shopify_df['inventoryQuantity'] = pd.to_numeric(shopify_df['inventoryQuantity'], errors='coerce')
+    validate_and_coerce(csv_df, 'inventory', 'FTP CSV')
+    validate_and_coerce(shopify_df, 'inventoryQuantity', 'Shopify Data')
 
     # 2. Merge Dataframes on SKU
     # outer join allows us to find matches, missing in shopify, and not in csv

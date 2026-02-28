@@ -4,6 +4,7 @@ import pandas as pd
 import json
 import time
 from dotenv import load_dotenv
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
 # Load Environment Variables from the parent directory's .env
 load_dotenv(dotenv_path='.env')
@@ -31,17 +32,37 @@ def _clean_nans(obj):
         return None
     return obj
 
+class ShopifyRateLimitError(Exception):
+    pass
+
+@retry(
+    wait=wait_exponential(multiplier=1, min=2, max=60),
+    stop=stop_after_attempt(5),
+    retry=retry_if_exception_type((requests.exceptions.RequestException, ShopifyRateLimitError)),
+    reraise=True
+)
 def execute_graphql_query(query: str, variables: dict = None) -> dict:
-    """Executes a GraphQL query against the Shopify API."""
+    """Executes a GraphQL query against the Shopify API with retry logic."""
     payload = {"query": query}
     if variables:
         payload["variables"] = _clean_nans(variables)
         
     response = requests.post(GRAPHQL_URL, headers=HEADERS, json=payload)
-    response.raise_for_status() # Raise exception for HTTP errors
+    
+    # Handle rate limits specifically before raising generic HTTP errors
+    if response.status_code == 429:
+        print("Rate limit reached. Pausing execution...")
+        raise ShopifyRateLimitError("Shopify API Rate Limit Exceeded")
+        
+    response.raise_for_status() # Raise exception for other HTTP errors
     
     data = response.json()
     if 'errors' in data:
+        # Check if the error is a cost/throttled error
+        error_msgs = [e.get('message', '').lower() for e in data['errors']]
+        if any("throttled" in msg for msg in error_msgs):
+            print("GraphQL query cost limit reached. Pausing execution...")
+            raise ShopifyRateLimitError("Shopify GraphQL Cost Limit Exceeded")
         raise Exception(f"GraphQL Error: {data['errors']}")
         
     return data['data']

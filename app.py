@@ -170,6 +170,8 @@ else:
             )
             
             # Group by handle to create variants under the same product
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            
             grouped = df_to_create.groupby('handle')
             total_products = len(grouped)
             
@@ -180,9 +182,7 @@ else:
             error_logs = []
             successful_indices = []
             
-            for i, (handle, group) in enumerate(grouped):
-                status_text.text(f"Creating {i+1} of {total_products}: Product {handle} ({len(group)} variants)")
-                
+            def do_create_product(handle, group):
                 try:
                     # Parent product info comes from the first row in the group
                     first_row = group.iloc[0]
@@ -227,15 +227,27 @@ else:
                 except Exception as e:
                     success, error_msg = False, str(e)
                     
-                if success:
-                    success_count += len(group)
-                    successful_indices.extend(group.index.tolist())
-                    st.session_state['missing_count'] = max(0, st.session_state['missing_count'] - len(group))
-                else:
-                    error_count += len(group)
-                    error_logs.append(f"**Handle {handle}**: {error_msg}")
+                return handle, group, success, error_msg
+            
+            futures = []
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                for handle, group in grouped:
+                    futures.append(executor.submit(do_create_product, handle, group))
                     
-                progress_bar.progress((i + 1) / total_products)
+                for i, future in enumerate(as_completed(futures)):
+                    handle, group, success, error_msg = future.result()
+                    
+                    status_text.text(f"Processed {i+1} of {total_products}: Product {handle} ({len(group)} variants)")
+                    
+                    if success:
+                        success_count += len(group)
+                        successful_indices.extend(group.index.tolist())
+                        st.session_state['missing_count'] = max(0, st.session_state['missing_count'] - len(group))
+                    else:
+                        error_count += len(group)
+                        error_logs.append(f"**Handle {handle}**: {error_msg}")
+                        
+                    progress_bar.progress((i + 1) / total_products)
                 
             status_text.text(f"Finished! Success: {success_count} variants, Errors: {error_count} variants")
             
